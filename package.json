@@ -1,0 +1,13 @@
+{
+  "name": "ai_bot-main",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {},
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "axios": "^1.9.0",
+    "dotenv": "^16.5.0",
+    "socket.io-client": "^4.8.1",
+    "tough-cookie": "^5.1.2"
+  }
+}
