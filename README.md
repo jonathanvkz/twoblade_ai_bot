@@ -11,4 +11,3 @@ This is the source code of HejBot, based off of the emexos' ai_bot.
 Made in Node.JS
 
 Installation Guide: See here - [https://github.com/emexos/ai_bot](https://github.com/emexos/ai_bot)
-Make sure to also define a SUPER_ADMIN_USERNAME in .env
