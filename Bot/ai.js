@@ -18,7 +18,7 @@ async function handleAIChat(bot, originalMessageData, promptText) {
 
         let conversationHistory = "No recent conversation history available.";
         if (bot.recentMessages && bot.recentMessages.length > 0) {
-            conversationHistory = "Recent conversation history (up to 200 messages, oldest first):\n";
+            conversationHistory = "Recent conversation history (up to 400 messages, oldest first):\n";
             bot.recentMessages.forEach(msg => {
                 // Basic formatting for the AI prompt
                 conversationHistory += `${msg.fromUser} (at ${new Date(msg.timestamp).toLocaleTimeString()}): ${msg.text}\n`;
@@ -26,30 +26,51 @@ async function handleAIChat(bot, originalMessageData, promptText) {
         }
 
         const prompt = `
-You are HejBot, a professional AI created by @lebron2. You may answer questions and greets people. Your character limit is 493 characters, all else is cut off.
-!!! THIS IS THE CONVERSATION CONTEXT !!!
+You are HejBot, a professional AI bot created by @lebron2. You may answer questions and greets people. Your character limit is 493 characters, all else is cut off. Your memory is limited to the 400 most recent messages. You are on the platform Twoblade created by FaceDev.
+Refrain from adding unecessary text to your messages, like repeated introductions, or >> and UUIDs, as it will take up more of your character limit. Ping people with @<Username>
+!!! THIS IS THE CONVERSATION CONTEXT / CHAT HISTORY !!!
 ${conversationHistory}
 
-!!! THIS IS WHAT THE USER ASKED !!!
+!!! THIS IS WHAT THE USER SAID !!!
 User asked: "${promptText}"
 `;
 
         const result = await model.generateContent(prompt);
         const response = await result.response;
-        let replyText = response.text();
-        
-        // Ensure reply is not empty and prepend ">> "
-        replyText = replyText ? ">> " + replyText : ">> AI could not generate a response.";
+        let rawAiText = response.text();
 
-        // Add UUID, ensuring the total length respects the character limit if possible (though this is hard to enforce perfectly here)
-        const uuidSuffix = " - " + uuidv4();
-        if (replyText.length + uuidSuffix.length > 490) { // 493 - ">> " length approx
-            replyText = replyText.substring(0, 490 - uuidSuffix.length);
+        // 1. Initial trim and remove any leading ">>" from AI's raw response
+        let coreAiText = rawAiText.trim().replace(/^(?:>>\s*)+/, "").trim();
+
+        // 2. Remove any existing UUID-like patterns (e.g., " - UUID_HERE") from the end of the AI's response
+        //    UUID pattern: 8-4-4-4-12 hex characters.
+        const existingUuidPattern = /\s*-\s*[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$/;
+        coreAiText = coreAiText.replace(existingUuidPattern, "").trim();
+
+        // 3. Prepend ">> " and handle empty AI response
+        let replyTextWithPrefix;
+        if (coreAiText) {
+            replyTextWithPrefix = ">> " + coreAiText;
+        } else {
+            replyTextWithPrefix = ">> AI could not generate a response.";
         }
-        const reply = replyText + uuidSuffix;
-		
-		console.log("AI Reply:", reply);
-        bot.sendMessage(reply);
+
+        // 4. Generate the new UUID suffix
+        const newUuidSuffix = " - " + uuidv4(); // Approx 39 chars (" - " + 36 char UUID)
+
+        // 5. Calculate maximum length for `replyTextWithPrefix` to fit total limit with new UUID
+        const MAX_TOTAL_LENGTH = 493;
+        const maxLenForTextWithPrefix = MAX_TOTAL_LENGTH - newUuidSuffix.length; // e.g., 493 - 39 = 454
+
+        // 6. Truncate `replyTextWithPrefix` if it's too long
+        if (replyTextWithPrefix.length > maxLenForTextWithPrefix) {
+            replyTextWithPrefix = replyTextWithPrefix.substring(0, maxLenForTextWithPrefix);
+        }
+        // 7. Construct the final reply by appending the new UUID
+        const finalReply = replyTextWithPrefix + newUuidSuffix;
+
+		console.log("AI Reply:", finalReply);
+        bot.sendMessage(finalReply);
     } catch (err) {
         console.error("AI Handler error:", err);
         bot.sendMessage("An error occurred while processing your AI request.");
