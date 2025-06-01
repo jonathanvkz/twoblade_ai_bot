@@ -4,6 +4,8 @@ const webCrypto = require('crypto').webcrypto; // For uuidv4 in Node.js
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const COMMAND_PREFIX = "hej.";
+const SUPER_ADMIN_USERNAME_PART = process.env.SUPER_ADMIN_USERNAME || "lebron2";
+
 
 function uuidv4() {
   // Uses webCrypto for Node.js compatibility
@@ -92,12 +94,17 @@ function handleHelp(bot) {
 - ${COMMAND_PREFIX}ai <your question>: Speak with Gemini.
 - ${COMMAND_PREFIX}usercount: Shows the number of unique users seen.
 - ${COMMAND_PREFIX}messagecount: Shows the total number of messages seen.
+- ${COMMAND_PREFIX}admin <username>: Adds a user as an administrator.
+- ${COMMAND_PREFIX}ban <username>: Bans a user from using bot commands.
 - ${COMMAND_PREFIX}help: Shows this help message.`;
     bot.sendMessage(helpMessage);
 }
 
 async function processMessage(bot, data) {
     // Prevent bot from processing its own messages
+    const botDomain = bot.getDomain(); // Get domain from bot instance
+    const superAdminUserIdentifier = `${SUPER_ADMIN_USERNAME_PART}#${botDomain}`;
+    
     if (bot.username && data.fromUser && data.text) {
         try {
             const botDomain = new URL(bot.baseUrl).hostname;
@@ -109,6 +116,12 @@ async function processMessage(bot, data) {
             console.error("Error in self-message check:", e);
             return;
         }
+    }
+
+    // Ignore messages from banned users (already checked in index.js and bot.js message handler, but good for defense in depth)
+    if (data.fromUser && bot.isBanned(data.fromUser)) {
+        // console.log(`AI module ignoring message from banned user: ${data.fromUser}`); // Optional
+        return;
     }
 
     const messageText = (data.text || "").trim();
@@ -138,6 +151,34 @@ async function processMessage(bot, data) {
             break;
         case "messagecount":
             handleMessageCount(bot);
+            break;
+        case "admin":
+            if (data.fromUser !== superAdminUserIdentifier) {
+                bot.sendMessage("You are not authorized to use this command.");
+                return;
+            }
+            const adminTargetUsername = args[0];
+            if (!adminTargetUsername) {
+                bot.sendMessage(`Usage: ${COMMAND_PREFIX}admin <username>`);
+                return;
+            }
+            const adminTargetUserIdentifier = `${adminTargetUsername}#${botDomain}`;
+            bot.addAdmin(adminTargetUserIdentifier);
+            bot.sendMessage(`User ${adminTargetUserIdentifier} has been added as an administrator.`);
+            break;
+        case "ban":
+            if (!bot.isAdmin(data.fromUser)) {
+                bot.sendMessage("You are not authorized to use this command. Only administrators can ban users.");
+                return;
+            }
+            const banTargetUsername = args[0];
+            if (!banTargetUsername) {
+                bot.sendMessage(`Usage: ${COMMAND_PREFIX}ban <username>`);
+                return;
+            }
+            const banTargetUserIdentifier = `${banTargetUsername}#${botDomain}`;
+            bot.banUser(banTargetUserIdentifier);
+            bot.sendMessage(`User ${banTargetUserIdentifier} has been banned from using bot commands.`);
             break;
         case "help":
             handleHelp(bot);
