@@ -8,7 +8,7 @@ const { processMessage } = require("./ai");
 
 const MESSAGE_COUNTS_FILE_PATH = path.join(__dirname, "..", "messageCounts.json");
 const RECENT_MESSAGES_FILE_PATH = path.join(__dirname, "..", "recentMessages.json");
-const MAX_RECENT_MESSAGES = 200;
+const MAX_RECENT_MESSAGES = 400;
 const cf_clearance = process.env.CF_CLEARANCE;
 
 class TwoBladeBot extends EventEmitter {
@@ -137,19 +137,47 @@ class TwoBladeBot extends EventEmitter {
             this.startedAt = Date.now();
         });
 
-        this.socket.on("disconnect", () => {
+        this.socket.on("disconnect", (reason) => {
             this.connected = false;
-            this.emit("disconnect");
+            this.emit("disconnect", reason);
+            console.log(`Bot disconnected from WebSocket. Reason: ${reason}`);
+            // socket.io-client will attempt to reconnect automatically for most reasons
+            // unless reconnection is disabled or it was a client-initiated disconnect.
         });
 
         this.socket.on("connect_error", (err) => {
+            console.error("Socket connection error:", err.message);
             this.emit("error", err);
+        });
+
+        // Optional: Listen to other reconnection-related events for more detailed logging or handling
+        this.socket.on("reconnect_attempt", (attempt) => {
+            console.log(`Socket attempting to reconnect... (Attempt: ${attempt})`);
+            this.emit("reconnecting", attempt); // Emit custom event if needed elsewhere
+        });
+
+        this.socket.on("reconnect", (attempt) => {
+            this.connected = true; // Ensure connected status is updated
+            console.log(`Socket reconnected successfully! (Attempt: ${attempt})`);
+            this.emit("reconnect", attempt); // Emit custom event if useful
+            // Consider if 'ready' event or similar logic should be re-triggered here
+        });
+
+        this.socket.on("reconnect_error", (err) => {
+            console.error("Socket reconnection error:", err.message);
+            // Propagate as a general error, which should be caught in index.js
+            this.emit("error", new Error(`Reconnection attempt failed: ${err.message}`));
+        });
+
+        this.socket.on("reconnect_failed", () => {
+            console.error("Socket reconnection failed after all attempts.");
+            // Propagate as a general error, which should be caught in index.js
+            this.emit("error", new Error("Socket reconnection ultimately failed. The bot may need a manual restart or intervention."));
         });
 
         this.socket.on("users_count", (count) => {
             this.emit("users_count", count);
         });
-
         this.socket.on("recent_messages", (messages) => {
             this.emit("recent_messages", messages);
         });
