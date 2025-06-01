@@ -22,8 +22,10 @@ const TwoBladeBot = require("./Bot/bot");
     bot.on("message", msg => {
       if (typeof msg !== 'object') return;
 
-      //if (msg.fromUser === 'user#twoblade.com') return;
-      //here you can set persons to the bot  shouldnt answer
+      if (msg && msg.fromUser && bot.isBanned(msg.fromUser)) {
+        console.log(`Ignoring message from banned user: ${msg.fromUser}`);
+        return;
+      }
 
       const frameWidth = 60;
 
@@ -48,8 +50,21 @@ const TwoBladeBot = require("./Bot/bot");
 
     bot.on("disconnect", () => {
       console.log("Bot disconnected!");
+      // socket.io-client handles reconnection attempts by default.
+      // You could add custom logic here if the bot needs to take specific actions
+      // upon disconnection beyond what socket.io-client provides.
+    });
+
+    // Catch errors emitted by the bot instance to prevent unhandled error crashes
+    bot.on("error", (err) => {
+      console.error("Bot encountered an error:", err.message);
+      if (err.stack) {
+        console.error(err.stack);
+      }
+      // The socket.io-client will attempt to reconnect for transport errors.
+      // If errors persist or are critical (e.g., reconnect_failed), manual intervention might be needed.
     });
   } catch (err) {
-    console.error("something went wrong", err);
+    console.error("Something went wrong during bot initialization or login:", err);
   }
 })();
