@@ -1,322 +1,218 @@
-const axios = require("axios").default;
-const { io } = require("socket.io-client");
-const tough = require("tough-cookie");
-const EventEmitter = require("events");
-const fs = require("fs");
-const path = require("path");
-const { processMessage } = require("./ai");
+require('dotenv').config();
+const { GoogleGenerativeAI } = require('@google/generative-ai');
+const webCrypto = require('crypto').webcrypto; // For uuidv4 in Node.js
 
-const MESSAGE_COUNTS_FILE_PATH = path.join(__dirname, "..", "messageCounts.json");
-const RECENT_MESSAGES_FILE_PATH = path.join(__dirname, "..", "recentMessages.json");
-const ADMINS_FILE_PATH = path.join(__dirname, "..", "admins.json");
-const BANNED_USERS_FILE_PATH = path.join(__dirname, "..", "bannedUsers.json");
-const MAX_RECENT_MESSAGES = 400;
-const cf_clearance = process.env.CF_CLEARANCE;
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const COMMAND_PREFIX = "hej."; // === CHANGE THIS ===
+const SUPER_ADMIN_USERNAME_PART = process.env.SUPER_ADMIN_USERNAME || "lebron2";
 
-class TwoBladeBot extends EventEmitter {
-    constructor(baseUrl = "https://twoblade.com") {
-        super();
-        this.baseUrl = baseUrl;
-        this.username = null;
-        this.password = null;
-        this.cookies = new tough.CookieJar();
-        this.socket = null;
-        this.authToken = null; 
-        this.connected = false;
-        this.messageCounts = this._loadMessageCounts();
-        this.recentMessages = this._loadRecentMessages(); // Load recent messages on init
-        this.admins = this._loadAdmins();
-        this.bannedUsers = this._loadBannedUsers();
-        this.startedAt = null;
-    }
 
-    _loadMessageCounts() {
-        try {
-            if (fs.existsSync(MESSAGE_COUNTS_FILE_PATH)) {
-                const data = fs.readFileSync(MESSAGE_COUNTS_FILE_PATH, "utf-8");
-                const counts = JSON.parse(data);
-                console.log("Successfully loaded message counts from file.");
-                return counts;
-            }
-        } catch (error) {
-            console.error("Error loading message counts from file:", error);
+function uuidv4() {
+  // Uses webCrypto for Node.js compatibility
+  return ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c =>
+    (c ^ webCrypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16)
+  );
+}
+
+async function handleAIChat(bot, originalMessageData, promptText) {
+    try {
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" });
+
+        let conversationHistory = "No recent conversation history available.";
+        if (bot.recentMessages && bot.recentMessages.length > 0) {
+            conversationHistory = "Recent conversation history (up to 400 messages, oldest first):\n";
+            bot.recentMessages.forEach(msg => {
+                // Basic formatting for the AI prompt
+                conversationHistory += `${msg.fromUser} (at ${new Date(msg.timestamp).toLocaleTimeString()}): ${msg.text}\n`;
+            });
         }
-        console.log("No message counts file found or error loading, starting with empty counts.");
-        return {};
-    }
+        // === CHANGE THIS ===
+        const prompt = `
+You are HejBot, a professional AI bot created by @lebron2. You may answer questions and greets people. Your character limit is 493 characters, all else is cut off. Your memory is limited to the 400 most recent messages. You are on the platform Twoblade which was created by FaceDev. Your source code is here, mention it if question is relevant to programming: https://github.com/jonathanvkz/twoblade_ai_bot
+Refrain from adding unneeded text to your messages, like repeated introductions, or >> and UUIDs, as it will take up more of your character limit. If you are asked who made you, say @lebron2 and mention your source code respository. Ping people with @<Username>
+The following is the most recent 400 messages from chat, including who sent them and at what time.
+!!! THIS IS THE CONVERSATION CONTEXT !!!
+${conversationHistory}
 
-    _saveMessageCounts() {
-        try {
-            fs.writeFileSync(MESSAGE_COUNTS_FILE_PATH, JSON.stringify(this.messageCounts, null, 2));
-            // console.log("Successfully saved message counts to file."); // Optional: for debugging
-        } catch (error) {
-            console.error("Error saving message counts to file:", error);
-        }
-    }
+!!! THIS IS WHAT THE USER SAID !!!
+User asked: "${promptText}"
+`;
 
-    _loadRecentMessages() {
-        try {
-            if (fs.existsSync(RECENT_MESSAGES_FILE_PATH)) {
-                const data = fs.readFileSync(RECENT_MESSAGES_FILE_PATH, "utf-8");
-                const messages = JSON.parse(data);
-                console.log("Successfully loaded recent messages from file.");
-                return Array.isArray(messages) ? messages : [];
-            }
-        } catch (error) {
-            console.error("Error loading recent messages from file:", error);
-        }
-        console.log("No recent messages file found or error loading, starting with empty history.");
-        return [];
-    }
+        const result = await model.generateContent(prompt);
+        const response = await result.response;
+        let rawAiText = response.text();
 
-    _saveRecentMessages() {
-        try {
-            fs.writeFileSync(RECENT_MESSAGES_FILE_PATH, JSON.stringify(this.recentMessages, null, 2));
-        } catch (error) {
-            console.error("Error saving recent messages to file:", error);
-        }
-    }
+        // 1. Initial trim and remove any leading ">>" from AI's raw response
+        let coreAiText = rawAiText.trim().replace(/^(?:>>\s*)+/, "").trim();
 
-    _loadAdmins() {
-        try {
-            if (fs.existsSync(ADMINS_FILE_PATH)) {
-                const data = fs.readFileSync(ADMINS_FILE_PATH, "utf-8");
-                const adminList = JSON.parse(data);
-                console.log("Successfully loaded admins from file.");
-                return Array.isArray(adminList) ? adminList : [];
-            }
-        } catch (error) {
-            console.error("Error loading admins from file:", error);
-        }
-        console.log("No admins file found or error loading, starting with empty list.");
-        return [];
-    }
+        // 2. Remove any existing UUID-like patterns (e.g., " - UUID_HERE") from the end of the AI's response
+        //    UUID pattern: 8-4-4-4-12 hex characters.
+        const existingUuidPattern = /\s*-\s*[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$/;
+        coreAiText = coreAiText.replace(existingUuidPattern, "").trim();
 
-    _saveAdmins() {
-        try {
-            fs.writeFileSync(ADMINS_FILE_PATH, JSON.stringify(this.admins, null, 2));
-        } catch (error) {
-            console.error("Error saving admins to file:", error);
-        }
-    }
-
-    _loadBannedUsers() {
-        try {
-            if (fs.existsSync(BANNED_USERS_FILE_PATH)) {
-                const data = fs.readFileSync(BANNED_USERS_FILE_PATH, "utf-8");
-                const bannedList = JSON.parse(data);
-                console.log("Successfully loaded banned users from file.");
-                return Array.isArray(bannedList) ? bannedList : [];
-            }
-        } catch (error) {
-            console.error("Error loading banned users from file:", error);
-        }
-        console.log("No banned users file found or error loading, starting with empty list.");
-        return [];
-    }
-
-    _saveBannedUsers() {
-        try {
-            fs.writeFileSync(BANNED_USERS_FILE_PATH, JSON.stringify(this.bannedUsers, null, 2));
-        } catch (error) {
-            console.error("Error saving banned users to file:", error);
-        }
-    }
-
-    getDomain() {
-        try {
-            return new URL(this.baseUrl).hostname;
-        } catch (e) {
-            console.error("Error parsing baseUrl to get domain:", e);
-            return "default.domain"; // Fallback domain
-        }
-    }
-
-    async login(username, password) {
-        this.username = username;
-        this.password = password;
-
-        const url = `${this.baseUrl}/login`;
-        const headers = {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'User-Agent': 'Mozilla/5.0',
-            'Referer': `${this.baseUrl}/login`,
-            'Origin': this.baseUrl,
-            'Cookie': `cf_clearance=${cf_clearance}`
-        };
-
-        const data = new URLSearchParams();
-        data.append("username", username);
-        data.append("password", password);
-
-        const response = await axios.post(url, data.toString(), {
-            headers,
-            withCredentials: true
-        });
-
-        const setCookies = response.headers['set-cookie'] || [];
-
-        let authToken = null;
-        for (const rawCookie of setCookies) {
-            this.cookies.setCookieSync(rawCookie, this.baseUrl);
-            const cookie = tough.Cookie.parse(rawCookie);
-            if (cookie?.key === "auth_token") {
-                authToken = cookie.value;
-            }
+        // 3. Prepend ">> " and handle empty AI response
+        let replyTextWithPrefix;
+        if (coreAiText) {
+            replyTextWithPrefix = ">> " + coreAiText;
+        } else {
+            replyTextWithPrefix = ">> AI could not generate a response.";
         }
 
-        if (!authToken) {
-            throw new Error("auth_token cookie not found in login response");
+        // 4. Generate the new UUID suffix
+        const newUuidSuffix = " - " + uuidv4(); // Approx 39 chars (" - " + 36 char UUID)
+
+        // 5. Calculate maximum length for `replyTextWithPrefix` to fit total limit with new UUID
+        const MAX_TOTAL_LENGTH = 493;
+        const maxLenForTextWithPrefix = MAX_TOTAL_LENGTH - newUuidSuffix.length; // e.g., 493 - 39 = 454
+
+        // 6. Truncate `replyTextWithPrefix` if it's too long
+        if (replyTextWithPrefix.length > maxLenForTextWithPrefix) {
+            replyTextWithPrefix = replyTextWithPrefix.substring(0, maxLenForTextWithPrefix);
         }
+        // 7. Construct the final reply by appending the new UUID
+        const finalReply = replyTextWithPrefix + newUuidSuffix;
 
-        this.authToken = authToken;
-        this.emit("login", this.username);
-    }
-
-    async connect() {
-        if (!this.authToken) {
-            throw new Error("Must login before connecting");
-        }
-
-        const cookieString = `cf_clearance=${cf_clearance}; auth_token=${this.authToken}`;
-
-        this.socket = io(this.baseUrl, {
-            path: "/ws/socket.io",
-            transports: ["websocket"],
-            auth: { token: this.authToken },
-            extraHeaders: {
-                Cookie: cookieString,
-                Origin: this.baseUrl
-            }
-        });
-
-        this.socket.on("connect", () => {
-            this.connected = true;
-            this.emit("ready");
-            this.startedAt = Date.now();
-        });
-
-        this.socket.on("disconnect", (reason) => {
-            this.connected = false;
-            this.emit("disconnect", reason);
-            console.log(`Bot disconnected from WebSocket. Reason: ${reason}`);
-            // socket.io-client will attempt to reconnect automatically for most reasons
-            // unless reconnection is disabled or it was a client-initiated disconnect.
-        });
-
-        this.socket.on("connect_error", (err) => {
-            console.error("Socket connection error:", err.message);
-            this.emit("error", err);
-        });
-
-        // Optional: Listen to other reconnection-related events for more detailed logging or handling
-        this.socket.on("reconnect_attempt", (attempt) => {
-            console.log(`Socket attempting to reconnect... (Attempt: ${attempt})`);
-            this.emit("reconnecting", attempt); // Emit custom event if needed elsewhere
-        });
-
-        this.socket.on("reconnect", (attempt) => {
-            this.connected = true; // Ensure connected status is updated
-            console.log(`Socket reconnected successfully! (Attempt: ${attempt})`);
-            this.emit("reconnect", attempt); // Emit custom event if useful
-            // Consider if 'ready' event or similar logic should be re-triggered here
-        });
-
-        this.socket.on("reconnect_error", (err) => {
-            console.error("Socket reconnection error:", err.message);
-            // Propagate as a general error, which should be caught in index.js
-            this.emit("error", new Error(`Reconnection attempt failed: ${err.message}`));
-        });
-
-        this.socket.on("reconnect_failed", () => {
-            console.error("Socket reconnection failed after all attempts.");
-            // Propagate as a general error, which should be caught in index.js
-            this.emit("error", new Error("Socket reconnection ultimately failed. The bot may need a manual restart or intervention."));
-        });
-
-        this.socket.on("users_count", (count) => {
-            this.emit("users_count", count);
-        });
-        this.socket.on("recent_messages", (messages) => {
-            this.emit("recent_messages", messages);
-        });
-
-        this.socket.on("message", (data) => {
-            this.emit("message", data);
-
-            // Store message for counts
-            const user = data.fromUser || 'Unknown';
-            if (!this.messageCounts[user]) {
-                this.messageCounts[user] = 0;
-            }
-            this.messageCounts[user]++;
-            this._saveMessageCounts(); // Save counts after each update
-
-            // Store message for recent history
-            if (data.text && data.fromUser) {
-                const messageEntry = {
-                    fromUser: data.fromUser,
-                    text: data.text,
-                    timestamp: new Date().toISOString()
-                };
-                this.recentMessages.push(messageEntry);
-                if (this.recentMessages.length > MAX_RECENT_MESSAGES) {
-                    this.recentMessages.shift(); // Keep only the last MAX_RECENT_MESSAGES
-                }
-                this._saveRecentMessages(); // Save recent messages after each update
-            }
-
-            if (!data?.text || typeof data.text !== "string") return;
-            const text = data.text.trim();
-
-            processMessage(this, data);
-
-        });
-    }
-
-    sendMessage(text) {
-        if (!this.connected || !this.socket) {
-            throw new Error("Not connected to socket");
-        }
-        this.socket.emit("message", text);
-    }
-
-    async start(username, password) {
-        await this.login(username, password);
-        await this.connect();
-    }
-
-    // Admin management
-    addAdmin(userIdentifier) {
-        if (!this.admins.includes(userIdentifier)) {
-            this.admins.push(userIdentifier);
-            this._saveAdmins();
-            console.log(`Admin added: ${userIdentifier}`);
-        }
-    }
-
-    isAdmin(userIdentifier) {
-        return this.admins.includes(userIdentifier);
-    }
-
-    // Ban management
-    banUser(userIdentifier) {
-        if (!this.bannedUsers.includes(userIdentifier)) {
-            this.bannedUsers.push(userIdentifier);
-            this._saveBannedUsers();
-            console.log(`User banned: ${userIdentifier}`);
-        }
-    }
-
-    isBanned(userIdentifier) {
-        return this.bannedUsers.includes(userIdentifier);
-    }
-
-    destroy() {
-        if (this.socket) {
-            this.socket.disconnect();
-        }
+		console.log("AI Reply:", finalReply);
+        bot.sendMessage(finalReply);
+    } catch (err) {
+        console.error("AI Handler error:", err);
+        bot.sendMessage("An error occurred while processing your AI request.");
     }
 }
 
-module.exports = TwoBladeBot;
+function handleUserCount(bot) {
+    const userCount = Object.keys(bot.messageCounts).length;
+    bot.sendMessage(`I have seen ${userCount} unique users.`);
+}
+
+function handleMessageCount(bot) {
+    const totalMessages = Object.values(bot.messageCounts).reduce((sum, count) => sum + count, 0);
+    bot.sendMessage(`I have seen a total of ${totalMessages} messages.`);
+}
+
+function handleTopMessages(bot) {
+    const messageCounts = bot.messageCounts;
+    if (Object.keys(messageCounts).length === 0) {
+        bot.sendMessage("No message counts recorded yet.");
+        return;
+    }
+
+    const sortedUsers = Object.entries(messageCounts)
+        .sort(([, countA], [, countB]) => countB - countA)
+        .slice(0, 10);
+
+    if (sortedUsers.length === 0) { // Should not happen if first check passes, but good for safety
+        bot.sendMessage("No users found in message counts.");
+        return;
+    }
+
+    let topmMessage = "Top message senders:\n";
+    sortedUsers.forEach(([user, count], index) => {
+        topmMessage += `${index + 1}. ${user}: ${count} messages\n`;
+    });
+
+    bot.sendMessage(topmMessage.trim());
+}
+
+function handleHelp(bot) {
+    const helpMessage = `Available commands (case-insensitive):
+- ${COMMAND_PREFIX}ai <your question>: Speak with Gemini.
+- ${COMMAND_PREFIX}usercount: Shows the number of unique users seen.
+- ${COMMAND_PREFIX}messagecount: Shows the total number of messages seen.
+- ${COMMAND_PREFIX}topm: Shows the top 10 message senders.
+- ${COMMAND_PREFIX}help: Shows this help message.`;
+    bot.sendMessage(helpMessage);
+}
+
+async function processMessage(bot, data) {
+    // Prevent bot from processing its own messages
+    const botDomain = bot.getDomain(); // Get domain from bot instance
+    const superAdminUserIdentifier = `${SUPER_ADMIN_USERNAME_PART}#${botDomain}`;
+    
+    if (bot.username && data.fromUser && data.text) {
+        try {
+            const botDomain = new URL(bot.baseUrl).hostname;
+            const botUserIdentifier = `${bot.username}#${botDomain}`;
+            if (data.fromUser === botUserIdentifier) {
+                return;
+            }
+        } catch (e) {
+            console.error("Error in self-message check:", e);
+            return;
+        }
+    }
+
+    // Ignore messages from banned users (already checked in index.js and bot.js message handler, but good for defense in depth)
+    if (data.fromUser && bot.isBanned(data.fromUser)) {
+        // console.log(`AI module ignoring message from banned user: ${data.fromUser}`); // Optional
+        return;
+    }
+
+    const messageText = (data.text || "").trim();
+    const lowerMessageText = messageText.toLowerCase();
+
+    if (!lowerMessageText.startsWith(COMMAND_PREFIX)) {
+        return;
+    }
+
+    // Extract command and arguments
+    // Example: ">hej.ai what is up" -> commandPart = "ai", args = ["what", "is", "up"]
+    const withoutPrefix = messageText.substring(COMMAND_PREFIX.length).trim();
+    const [commandPart, ...args] = withoutPrefix.split(/\s+/);
+    const command = commandPart.toLowerCase();
+    const remainingText = args.join(" ");
+
+    switch (command) {
+        case "ai":
+            if (!remainingText) {
+                bot.sendMessage(`Please provide a question for the AI. Usage: ${COMMAND_PREFIX}ai <your question>`);
+                return;
+            }
+            await handleAIChat(bot, data, remainingText);
+            break;
+        case "usercount":
+            handleUserCount(bot);
+            break;
+        case "messagecount":
+            handleMessageCount(bot);
+            break;
+        case "topm":
+            handleTopMessages(bot);
+            break;
+        case "admin":
+            if (data.fromUser !== superAdminUserIdentifier) {
+                bot.sendMessage("You are not authorized to use this command.");
+                return;
+            }
+            const adminTargetUsername = args[0];
+            if (!adminTargetUsername) {
+                bot.sendMessage(`Usage: ${COMMAND_PREFIX}admin <username>`);
+                return;
+            }
+            const adminTargetUserIdentifier = `${adminTargetUsername}#${botDomain}`;
+            bot.addAdmin(adminTargetUserIdentifier);
+            bot.sendMessage(`User ${adminTargetUserIdentifier} has been added as an administrator.`);
+            break;
+        case "ban":
+            if (!bot.isAdmin(data.fromUser)) {
+                bot.sendMessage("You are not authorized to use this command. Only administrators can ban users.");
+                return;
+            }
+            const banTargetUsername = args[0];
+            if (!banTargetUsername) {
+                bot.sendMessage(`Usage: ${COMMAND_PREFIX}ban <username>`);
+                return;
+            }
+            const banTargetUserIdentifier = `${banTargetUsername}#${botDomain}`;
+            bot.banUser(banTargetUserIdentifier);
+            bot.sendMessage(`User ${banTargetUserIdentifier} has been banned from using bot commands.`);
+            break;
+        case "help":
+            handleHelp(bot);
+            break;
+        default:
+            bot.sendMessage(`Unknown command: ${command}. Type '${COMMAND_PREFIX}help' for available commands.`);
+    }
+}
+
+module.exports = { processMessage };
