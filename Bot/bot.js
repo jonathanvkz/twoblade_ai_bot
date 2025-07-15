@@ -8,6 +8,8 @@ const { processMessage } = require("./ai");
 
 const MESSAGE_COUNTS_FILE_PATH = path.join(__dirname, "..", "messageCounts.json");
 const RECENT_MESSAGES_FILE_PATH = path.join(__dirname, "..", "recentMessages.json");
+const ADMINS_FILE_PATH = path.join(__dirname, "..", "admins.json");
+const BANNED_USERS_FILE_PATH = path.join(__dirname, "..", "bannedUsers.json");
 const MAX_RECENT_MESSAGES = 400;
 const cf_clearance = process.env.CF_CLEARANCE;
 
@@ -23,6 +25,8 @@ class TwoBladeBot extends EventEmitter {
         this.connected = false;
         this.messageCounts = this._loadMessageCounts();
         this.recentMessages = this._loadRecentMessages(); // Load recent messages on init
+        this.admins = this._loadAdmins();
+        this.bannedUsers = this._loadBannedUsers();
         this.startedAt = null;
     }
 
@@ -70,6 +74,61 @@ class TwoBladeBot extends EventEmitter {
             fs.writeFileSync(RECENT_MESSAGES_FILE_PATH, JSON.stringify(this.recentMessages, null, 2));
         } catch (error) {
             console.error("Error saving recent messages to file:", error);
+        }
+    }
+
+    _loadAdmins() {
+        try {
+            if (fs.existsSync(ADMINS_FILE_PATH)) {
+                const data = fs.readFileSync(ADMINS_FILE_PATH, "utf-8");
+                const adminList = JSON.parse(data);
+                console.log("Successfully loaded admins from file.");
+                return Array.isArray(adminList) ? adminList : [];
+            }
+        } catch (error) {
+            console.error("Error loading admins from file:", error);
+        }
+        console.log("No admins file found or error loading, starting with empty list.");
+        return [];
+    }
+
+    _saveAdmins() {
+        try {
+            fs.writeFileSync(ADMINS_FILE_PATH, JSON.stringify(this.admins, null, 2));
+        } catch (error) {
+            console.error("Error saving admins to file:", error);
+        }
+    }
+
+    _loadBannedUsers() {
+        try {
+            if (fs.existsSync(BANNED_USERS_FILE_PATH)) {
+                const data = fs.readFileSync(BANNED_USERS_FILE_PATH, "utf-8");
+                const bannedList = JSON.parse(data);
+                console.log("Successfully loaded banned users from file.");
+                return Array.isArray(bannedList) ? bannedList : [];
+            }
+        } catch (error) {
+            console.error("Error loading banned users from file:", error);
+        }
+        console.log("No banned users file found or error loading, starting with empty list.");
+        return [];
+    }
+
+    _saveBannedUsers() {
+        try {
+            fs.writeFileSync(BANNED_USERS_FILE_PATH, JSON.stringify(this.bannedUsers, null, 2));
+        } catch (error) {
+            console.error("Error saving banned users to file:", error);
+        }
+    }
+
+    getDomain() {
+        try {
+            return new URL(this.baseUrl).hostname;
+        } catch (e) {
+            console.error("Error parsing baseUrl to get domain:", e);
+            return "default.domain"; // Fallback domain
         }
     }
 
@@ -225,6 +284,32 @@ class TwoBladeBot extends EventEmitter {
     async start(username, password) {
         await this.login(username, password);
         await this.connect();
+    }
+
+    // Admin management
+    addAdmin(userIdentifier) {
+        if (!this.admins.includes(userIdentifier)) {
+            this.admins.push(userIdentifier);
+            this._saveAdmins();
+            console.log(`Admin added: ${userIdentifier}`);
+        }
+    }
+
+    isAdmin(userIdentifier) {
+        return this.admins.includes(userIdentifier);
+    }
+
+    // Ban management
+    banUser(userIdentifier) {
+        if (!this.bannedUsers.includes(userIdentifier)) {
+            this.bannedUsers.push(userIdentifier);
+            this._saveBannedUsers();
+            console.log(`User banned: ${userIdentifier}`);
+        }
+    }
+
+    isBanned(userIdentifier) {
+        return this.bannedUsers.includes(userIdentifier);
     }
 
     destroy() {
